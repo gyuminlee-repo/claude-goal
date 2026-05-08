@@ -167,6 +167,71 @@ def get_first_goal(conn: sqlite3.Connection, session_ids: list[str]) -> sqlite3.
     return None
 
 
+def candidate_session_ids(hook_data: dict[str, Any] | None = None) -> list[str]:
+    """Return de-duplicated session-id candidates ordered by preference.
+
+    The cwd-based fallback is fragile when the Bash tool's PWD drifts (macOS
+    /tmp vs /private/tmp, scripts that cd around). We try every signal we have
+    so a goal set from one PWD is still discoverable when /goal status fires
+    from a slightly different PWD in the same Claude session.
+    """
+    out: list[str] = []
+    sources = [
+        os.environ.get("CLAUDE_GOAL_SESSION_ID"),
+        os.environ.get("CLAUDE_SESSION_ID"),
+    ]
+    if hook_data:
+        sources.append(hook_data.get("session_id"))
+        sources.append(cwd_session_id(hook_data.get("cwd")))
+    sources.append(session_id())
+    for value in sources:
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+def find_goal(
+    conn: sqlite3.Connection,
+    candidates: list[str],
+    *,
+    only_active: bool = False,
+) -> sqlite3.Row | None:
+    """Find the live goal, robust against cwd-keyed session id drift.
+
+    Codex-style /goal: a single live goal at a time. The cwd-based session
+    id is fragile (PWD drift in the Bash tool, /tmp vs /private/tmp on
+    macOS, scripts that cd around), so we don't trust it as the only key.
+
+    Preference order:
+    1. The most recently updated *active* goal anywhere in the DB. If the
+       user has set a goal in this Claude session, this is it — even if a
+       stale active goal from a different cwd is also present.
+    2. Else (no active goals): a goal whose session id matches any
+       candidate, picking the most recently updated.
+    3. Else: the most recently updated goal of any status.
+    """
+    row = conn.execute(
+        "SELECT * FROM goals WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1"
+    ).fetchone()
+    if row:
+        return row
+
+    if only_active:
+        return None
+
+    matches: list[sqlite3.Row] = []
+    for sid in candidates:
+        candidate_row = get_goal(conn, sid)
+        if candidate_row:
+            matches.append(candidate_row)
+    if matches:
+        return max(matches, key=lambda r: r["updated_at"] or 0)
+
+    return conn.execute(
+        "SELECT * FROM goals ORDER BY updated_at DESC LIMIT 1"
+    ).fetchone()
+
+
 def validate_objective(objective: str) -> str:
     objective = objective.strip()
     if not objective:
@@ -215,9 +280,10 @@ def set_goal(conn: sqlite3.Connection, sid: str, objective: str, token_budget: i
 
 
 def update_status(conn: sqlite3.Connection, sid: str, status: str) -> sqlite3.Row:
+    """Update status of the goal reachable from sid, falling back across cwd drift."""
     if status not in STATUSES:
         raise ValueError(f"invalid status: {status}")
-    goal = get_goal(conn, sid)
+    goal = find_goal(conn, candidate_session_ids())
     if not goal:
         raise ValueError("no goal is set for this Claude session")
 
@@ -230,19 +296,22 @@ def update_status(conn: sqlite3.Connection, sid: str, status: str) -> sqlite3.Ro
         """
         UPDATE goals
         SET status = ?, time_used_seconds = ?, active_started_at = ?, updated_at = ?, completed_at = ?
-        WHERE session_id = ?
+        WHERE id = ?
         """,
-        (status, used, active_started_at, ts, completed_at, sid),
+        (status, used, active_started_at, ts, completed_at, goal["id"]),
     )
-    event(conn, sid, status, goal_id=goal["id"])
-    return get_goal(conn, sid)  # type: ignore[return-value]
+    event(conn, goal["session_id"], status, goal_id=goal["id"])
+    return get_goal(conn, goal["session_id"])  # type: ignore[return-value]
 
 
 def clear_goal(conn: sqlite3.Connection, sid: str) -> bool:
-    goal = get_goal(conn, sid)
-    execute(conn, "DELETE FROM goals WHERE session_id = ?", (sid,))
-    event(conn, sid, "clear", goal_id=goal["id"] if goal else None)
-    return bool(goal)
+    """Clear the goal reachable from sid, falling back across cwd drift."""
+    goal = find_goal(conn, candidate_session_ids())
+    if goal:
+        execute(conn, "DELETE FROM goals WHERE id = ?", (goal["id"],))
+        event(conn, goal["session_id"], "clear", goal_id=goal["id"])
+        return True
+    return False
 
 
 def parse_set_args(raw: str) -> tuple[str, int | None]:
@@ -366,7 +435,7 @@ def invoke(raw_args: str) -> str:
         rest = raw_args.split(maxsplit=1)[1] if " " in raw_args else ""
 
         if command in {"status", "show", "get", "menu"}:
-            return render_invoke_result("status", get_goal(conn, sid))
+            return render_invoke_result("status", find_goal(conn, candidate_session_ids()))
         if command == "pause":
             return render_invoke_result("pause", update_status(conn, sid, "paused"))
         if command == "resume":
@@ -386,19 +455,10 @@ def stop_hook() -> int:
     except json.JSONDecodeError:
         data = {}
 
-    candidates: list[str] = []
-    for value in (
-        os.environ.get("CLAUDE_GOAL_SESSION_ID"),
-        os.environ.get("CLAUDE_SESSION_ID"),
-        data.get("session_id"),
-        cwd_session_id(data.get("cwd")),
-        session_id(),
-    ):
-        if value and value not in candidates:
-            candidates.append(value)
+    candidates = candidate_session_ids(data)
 
     with sqlite_connect() as conn:
-        goal = get_first_goal(conn, candidates)
+        goal = find_goal(conn, candidates, only_active=True)
         if not goal or goal["status"] != "active":
             return 0
 
@@ -473,7 +533,7 @@ def main(argv: list[str]) -> int:
             print(invoke(" ".join(args.args)))
         elif args.cmd == "status":
             with sqlite_connect() as conn:
-                print(render_invoke_result("status", get_goal(conn, session_id())))
+                print(render_invoke_result("status", find_goal(conn, candidate_session_ids())))
         elif args.cmd == "pause":
             with sqlite_connect() as conn:
                 print(render_invoke_result("pause", update_status(conn, session_id(), "paused")))
@@ -492,7 +552,12 @@ def main(argv: list[str]) -> int:
                 print(render_invoke_result("set", set_goal(conn, session_id(), objective, budget)))
         elif args.cmd == "json":
             with sqlite_connect() as conn:
-                print(render_goal_json(get_goal(conn, args.session_id)))
+                # If --session-id was explicitly passed, honor it; otherwise use the
+                # multi-candidate finder so cwd drift doesn't hide a live goal.
+                if args.session_id != session_id():
+                    print(render_goal_json(get_goal(conn, args.session_id)))
+                else:
+                    print(render_goal_json(find_goal(conn, candidate_session_ids())))
         elif args.cmd == "stop-hook":
             return stop_hook()
         else:

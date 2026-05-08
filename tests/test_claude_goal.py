@@ -96,3 +96,67 @@ def test_stop_hook_allows_paused_goal(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def test_cli_finds_goal_after_session_id_drift(tmp_path):
+    """A goal set under one session id must remain reachable from another.
+
+    Repro for the bug where the Bash tool's PWD drifted between calls,
+    keying CLI commands to a fresh cwd:<hash> session id while the live
+    goal was still under the original one. status/pause/resume/clear
+    were returning "no goal" while the Stop hook still saw it.
+    """
+    assert run_goal(tmp_path, "set", "stay alive", session="session-a").returncode == 0
+
+    # Fresh "session" (simulates cwd drift) -> no env-keyed goal here, but
+    # status must still surface the live one via the active-goal fallback.
+    status = run_goal(tmp_path, "status", session="session-b")
+    assert status.returncode == 0, status.stderr
+    assert "stay alive" in status.stdout
+    assert "Status: active" in status.stdout
+
+    # pause from the drifted session should also work and actually pause
+    # the original goal.
+    paused = run_goal(tmp_path, "pause", session="session-b")
+    assert paused.returncode == 0, paused.stderr
+    assert "Status: paused" in paused.stdout
+
+    # original session sees the paused state
+    status_a = run_goal(tmp_path, "status", session="session-a")
+    assert "Status: paused" in status_a.stdout
+
+    # clear from the drifted session deletes the original goal
+    cleared = run_goal(tmp_path, "clear", session="session-b")
+    assert cleared.returncode == 0
+    assert "Goal cleared." in cleared.stdout
+
+    status_after = run_goal(tmp_path, "status", session="session-a")
+    assert "No goal is currently set" in status_after.stdout
+
+
+def test_stop_hook_finds_goal_via_active_fallback(tmp_path):
+    """Stop hook must keep blocking even if every candidate session id misses.
+
+    Set a goal under one session id, then send a hook payload with totally
+    different session_id and cwd. The fallback to the most-recent active
+    goal must still trigger the block.
+    """
+    assert run_goal(tmp_path, "set", "keep going", session="orig").returncode == 0
+
+    env = os.environ.copy()
+    env["CLAUDE_GOAL_DB"] = str(tmp_path / "goals.sqlite")
+    # Force the script into a clean session-id space so the cwd-hash
+    # fallback can't accidentally land on the goal.
+    env["CLAUDE_GOAL_SESSION_ID"] = "drifted-session"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "stop-hook"],
+        input=json.dumps({"session_id": "another-drifted", "cwd": "/totally/different/path"}),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["decision"] == "block"
+    assert "keep going" in data["reason"]
