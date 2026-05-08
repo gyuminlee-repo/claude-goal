@@ -17,9 +17,9 @@ Relevant upstream files inspected from `github.com/openai/codex`:
 - `codex-rs/tui/src/chatwidget/goal_validation.rs`: objective length validation.
 - `codex-rs/protocol/src/protocol.rs`: `MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000`.
 
-Observed local Codex state:
+Observed local Codex state during development:
 
-- DB: `~/.codex/state_5.sqlite`.
+- Observed DB on Joseph's machine: `~/.codex/state_5.sqlite`. This filename is not a stable public API; Codex can change it across versions.
 - Table: `thread_goals(thread_id, goal_id, objective, status, token_budget, tokens_used, time_used_seconds, created_at_ms, updated_at_ms)`.
 - Status values: `active`, `paused`, `budget_limited`, `complete`.
 - On 2026-05-08 this machine had 6 Codex goals: 2 active, 1 paused, 3 complete.
@@ -35,8 +35,7 @@ Behavior cloned here:
 - Bare `/goal` status/menu behavior.
 - `/goal pause`, `/goal resume`, `/goal clear`, `/goal complete`.
 - Completion-audit prompt before marking complete.
-- Objective wrapped in `<untrusted_objective>`.
-- Codex goal import from `~/.codex/state_5.sqlite`.
+- Objective wrapped in `<objective>` for friendlier public output.
 
 Known difference:
 

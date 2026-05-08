@@ -2,7 +2,7 @@
 
 A Codex-style `/goal` command for Claude Code.
 
-It gives Claude Code a persistent local goal state, Codex-inspired continuation instructions, pause/resume/clear/status controls, completion-audit guardrails, and an importer that can copy your existing Codex `/goal` history out of Codex's local SQLite database at `~/.codex/state_5.sqlite`.
+It gives Claude Code a persistent local goal state, Codex-inspired continuation instructions, pause/resume/clear/status controls, and completion-audit guardrails.
 
 ## Install
 
@@ -34,13 +34,9 @@ State is stored at:
 /goal pause
 /goal resume
 /goal clear
-/goal replace ship a better implementation
-/goal list
-/goal import-codex
-/goal codex
 ```
 
-When a goal is active, the command returns a Codex-style continuation prompt that wraps the objective in `<untrusted_objective>` and requires a completion audit before marking the goal complete.
+When a goal is active, the command returns a continuation prompt that wraps the goal text in `<objective>` and requires a completion audit before marking the goal complete.
 
 ## Notes
 

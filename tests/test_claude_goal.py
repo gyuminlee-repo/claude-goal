@@ -27,7 +27,7 @@ def test_set_status_pause_resume_complete(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Action: set" in result.stdout
     assert "Token budget: 98.5K" in result.stdout
-    assert "<untrusted_objective>" in result.stdout
+    assert "<objective>" in result.stdout
 
     result = run_goal(tmp_path, "pause")
     assert result.returncode == 0, result.stderr
@@ -51,11 +51,6 @@ def test_rejects_empty_and_duplicate_without_replace(tmp_path):
     result = run_goal(tmp_path, "set", "second objective")
     assert result.returncode == 1
     assert "already has a goal" in result.stderr
-
-    result = run_goal(tmp_path, "invoke", "replace", "second objective")
-    assert result.returncode == 0, result.stderr
-    assert "second objective" in result.stdout
-
 
 def test_json_output(tmp_path):
     assert run_goal(tmp_path, "set", "ship the thing").returncode == 0

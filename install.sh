@@ -14,8 +14,6 @@ if [ -L "$HOME/.claude/commands/goal.md" ] && [ "$(readlink "$HOME/.claude/comma
   rm "$HOME/.claude/commands/goal.md"
 fi
 
-python3 "$ROOT/goal/scripts/claude_goal.py" import-codex >/dev/null 2>&1 || true
-
 echo "Installed /goal for Claude Code."
 echo "Skill: $HOME/.claude/skills/goal"
 echo "State DB: $HOME/.claude/goal/goals.sqlite"
