@@ -98,59 +98,92 @@ def test_stop_hook_allows_paused_goal(tmp_path):
     assert result.stdout == ""
 
 
-def test_cli_finds_goal_after_session_id_drift(tmp_path):
-    """A goal set under one session id must remain reachable from another.
+def test_cli_does_not_leak_goals_across_sessions(tmp_path):
+    """A goal set in session A must NOT surface for session B.
 
-    Repro for the bug where the Bash tool's PWD drifted between calls,
-    keying CLI commands to a fresh cwd:<hash> session id while the live
-    goal was still under the original one. status/pause/resume/clear
-    were returning "no goal" while the Stop hook still saw it.
+    Earlier versions of this script papered over cwd drift by falling
+    back to "any active goal in the DB", which leaked a goal from one
+    Claude session into another. The fix is to rely on a stable
+    TERM_SESSION_ID anchor + candidate list — never global fallback.
     """
-    assert run_goal(tmp_path, "set", "stay alive", session="session-a").returncode == 0
+    assert run_goal(tmp_path, "set", "session A goal", session="session-a").returncode == 0
 
-    # Fresh "session" (simulates cwd drift) -> no env-keyed goal here, but
-    # status must still surface the live one via the active-goal fallback.
-    status = run_goal(tmp_path, "status", session="session-b")
-    assert status.returncode == 0, status.stderr
-    assert "stay alive" in status.stdout
-    assert "Status: active" in status.stdout
+    status_b = run_goal(tmp_path, "status", session="session-b")
+    assert status_b.returncode == 0, status_b.stderr
+    assert "No goal is currently set" in status_b.stdout
 
-    # pause from the drifted session should also work and actually pause
-    # the original goal.
-    paused = run_goal(tmp_path, "pause", session="session-b")
-    assert paused.returncode == 0, paused.stderr
-    assert "Status: paused" in paused.stdout
-
-    # original session sees the paused state
-    status_a = run_goal(tmp_path, "status", session="session-a")
-    assert "Status: paused" in status_a.stdout
-
-    # clear from the drifted session deletes the original goal
-    cleared = run_goal(tmp_path, "clear", session="session-b")
-    assert cleared.returncode == 0
-    assert "Goal cleared." in cleared.stdout
-
-    status_after = run_goal(tmp_path, "status", session="session-a")
-    assert "No goal is currently set" in status_after.stdout
-
-
-def test_stop_hook_finds_goal_via_active_fallback(tmp_path):
-    """Stop hook must keep blocking even if every candidate session id misses.
-
-    Set a goal under one session id, then send a hook payload with totally
-    different session_id and cwd. The fallback to the most-recent active
-    goal must still trigger the block.
-    """
-    assert run_goal(tmp_path, "set", "keep going", session="orig").returncode == 0
-
+    # Stop hook in session B with no overlapping candidates must NOT block.
     env = os.environ.copy()
     env["CLAUDE_GOAL_DB"] = str(tmp_path / "goals.sqlite")
-    # Force the script into a clean session-id space so the cwd-hash
-    # fallback can't accidentally land on the goal.
-    env["CLAUDE_GOAL_SESSION_ID"] = "drifted-session"
+    env["CLAUDE_GOAL_SESSION_ID"] = "session-b"
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "stop-hook"],
-        input=json.dumps({"session_id": "another-drifted", "cwd": "/totally/different/path"}),
+        input=json.dumps({"session_id": "session-b", "cwd": "/different/path"}),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""  # no block when no goal in this session
+
+
+def test_term_session_anchors_goal_across_pwd_drift(tmp_path):
+    """A goal set in one Claude session must remain reachable across cwd drift.
+
+    Bash subshells inherit TERM_SESSION_ID even after `cd`. As long as the
+    same TERM_SESSION_ID is present, CLI commands must resolve the same
+    goal — no env-var override needed.
+    """
+    env = os.environ.copy()
+    env["CLAUDE_GOAL_DB"] = str(tmp_path / "goals.sqlite")
+    # Strip any explicit overrides so we exclusively test the TERM_SESSION_ID path.
+    env.pop("CLAUDE_GOAL_SESSION_ID", None)
+    env.pop("CLAUDE_SESSION_ID", None)
+    env["TERM_SESSION_ID"] = "iterm-tab-abc-123"
+    env["PWD"] = "/tmp/orig-cwd"
+
+    set_result = subprocess.run(
+        [sys.executable, str(SCRIPT), "set", "stay alive across drift"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert set_result.returncode == 0, set_result.stderr
+
+    # Now simulate cwd drift in a Bash subshell of the same Claude session.
+    env["PWD"] = "/tmp/wandered-far-away"
+    status_result = subprocess.run(
+        [sys.executable, str(SCRIPT), "status"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert status_result.returncode == 0, status_result.stderr
+    assert "stay alive across drift" in status_result.stdout
+    assert "Status: active" in status_result.stdout
+
+
+def test_stop_hook_finds_goal_via_hook_payload_cwd(tmp_path):
+    """Stop hook must use hook_data.cwd to resolve the original goal session.
+
+    A goal set when PWD=/Users/alice/proj-a will be keyed by
+    cwd:<sha256(/Users/alice/proj-a)>. Later the Bash subshell may have
+    drifted to /tmp, so session_id() no longer matches. But the Stop
+    hook is given the real Claude session cwd in its payload, so it
+    should still find the goal via the cwd-derived candidate.
+    """
+    # Set the goal using the standard session-id env so we know what to recover
+    import hashlib
+    real_cwd = "/Users/alice/proj-a"
+    real_cwd_session_id = "cwd:" + hashlib.sha256(real_cwd.encode()).hexdigest()[:16]
+
+    assert run_goal(tmp_path, "set", "keep going", session=real_cwd_session_id).returncode == 0
+
+    # Hook fires from a "subshell" where the env points elsewhere, but the
+    # hook payload still carries the real Claude session cwd.
+    env = os.environ.copy()
+    env["CLAUDE_GOAL_DB"] = str(tmp_path / "goals.sqlite")
+    env["CLAUDE_GOAL_SESSION_ID"] = "drifted-subshell"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "stop-hook"],
+        input=json.dumps({"session_id": "drifted-subshell", "cwd": real_cwd}),
         env=env,
         text=True,
         capture_output=True,

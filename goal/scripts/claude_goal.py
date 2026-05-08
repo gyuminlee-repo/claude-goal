@@ -31,11 +31,37 @@ def now() -> int:
     return int(time.time())
 
 
+def _term_session_id() -> str | None:
+    """Return a stable identifier tied to the current terminal session.
+
+    Bash subshells inherit TERM_SESSION_ID / ITERM_SESSION_ID, and the value
+    is stable for the lifetime of the surrounding Claude Code session. That
+    makes it a far better session anchor than `pwd`, which drifts whenever
+    a script `cd`s or macOS resolves /tmp vs /private/tmp differently.
+    """
+    for key in ("TERM_SESSION_ID", "ITERM_SESSION_ID"):
+        value = os.environ.get(key)
+        if value:
+            return "term:" + hashlib.sha256(value.encode()).hexdigest()[:16]
+    return None
+
+
 def session_id() -> str:
+    """Pick the most stable session id available in the current process.
+
+    Order of preference:
+    - CLAUDE_GOAL_SESSION_ID / CLAUDE_SESSION_ID (explicit override)
+    - TERM_SESSION_ID / ITERM_SESSION_ID (stable across subshells in one
+      Claude Code session, distinct across separate terminal tabs)
+    - PWD-derived hash (last resort; drifts in subshells)
+    """
     for key in ("CLAUDE_GOAL_SESSION_ID", "CLAUDE_SESSION_ID"):
         value = os.environ.get(key)
         if value:
             return value
+    term = _term_session_id()
+    if term:
+        return term
     cwd = os.environ.get("PWD") or str(Path.cwd())
     return "cwd:" + hashlib.sha256(cwd.encode()).hexdigest()[:16]
 
@@ -170,19 +196,24 @@ def get_first_goal(conn: sqlite3.Connection, session_ids: list[str]) -> sqlite3.
 def candidate_session_ids(hook_data: dict[str, Any] | None = None) -> list[str]:
     """Return de-duplicated session-id candidates ordered by preference.
 
-    The cwd-based fallback is fragile when the Bash tool's PWD drifts (macOS
-    /tmp vs /private/tmp, scripts that cd around). We try every signal we have
-    so a goal set from one PWD is still discoverable when /goal status fires
-    from a slightly different PWD in the same Claude session.
+    Returns every signal we have for "what session am I in", so a goal set
+    from one PWD is still discoverable when /goal status fires from a
+    slightly different PWD in the same Claude Code session. The list
+    intentionally includes both the stable terminal-session anchor and the
+    raw cwd hash, so old goals that were set under the cwd-only scheme still
+    resolve after the script is upgraded.
     """
     out: list[str] = []
-    sources = [
+    sources: list[str | None] = [
         os.environ.get("CLAUDE_GOAL_SESSION_ID"),
         os.environ.get("CLAUDE_SESSION_ID"),
     ]
     if hook_data:
         sources.append(hook_data.get("session_id"))
         sources.append(cwd_session_id(hook_data.get("cwd")))
+    sources.append(_term_session_id())
+    cwd = os.environ.get("PWD") or str(Path.cwd())
+    sources.append("cwd:" + hashlib.sha256(cwd.encode()).hexdigest()[:16])
     sources.append(session_id())
     for value in sources:
         if value and value not in out:
@@ -196,40 +227,25 @@ def find_goal(
     *,
     only_active: bool = False,
 ) -> sqlite3.Row | None:
-    """Find the live goal, robust against cwd-keyed session id drift.
+    """Find the goal that belongs to *this* session, robust to cwd drift.
 
-    Codex-style /goal: a single live goal at a time. The cwd-based session
-    id is fragile (PWD drift in the Bash tool, /tmp vs /private/tmp on
-    macOS, scripts that cd around), so we don't trust it as the only key.
-
-    Preference order:
-    1. The most recently updated *active* goal anywhere in the DB. If the
-       user has set a goal in this Claude session, this is it — even if a
-       stale active goal from a different cwd is also present.
-    2. Else (no active goals): a goal whose session id matches any
-       candidate, picking the most recently updated.
-    3. Else: the most recently updated goal of any status.
+    Tries each candidate session id and returns the most recently updated
+    match. Critically, this does NOT fall back to "any active goal in the
+    DB" — that fallback was tempting (it papers over cwd drift) but it
+    leaks goals across separate Claude sessions: a paused goal in session
+    A would surface as the live goal of session B just because A's was
+    most recent. With multiple session-id candidates (terminal anchor +
+    cwd hash + env overrides), drift inside one session is already
+    handled, and no cross-session leakage is possible.
     """
-    row = conn.execute(
-        "SELECT * FROM goals WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1"
-    ).fetchone()
-    if row:
-        return row
-
-    if only_active:
-        return None
-
     matches: list[sqlite3.Row] = []
     for sid in candidates:
-        candidate_row = get_goal(conn, sid)
-        if candidate_row:
-            matches.append(candidate_row)
+        row = get_goal(conn, sid)
+        if row and (not only_active or row["status"] == "active"):
+            matches.append(row)
     if matches:
         return max(matches, key=lambda r: r["updated_at"] or 0)
-
-    return conn.execute(
-        "SELECT * FROM goals ORDER BY updated_at DESC LIMIT 1"
-    ).fetchone()
+    return None
 
 
 def validate_objective(objective: str) -> str:
