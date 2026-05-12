@@ -1,13 +1,17 @@
-# claude-goal
+# claude-goal (gyuminlee-repo fork)
 
 A Codex-style `/goal` command for Claude Code.
+
+> Fork of [jthack/claude-goal](https://github.com/jthack/claude-goal) with
+> per-Claude-session isolation (uses `CLAUDE_CODE_SESSION_ID` so multiple
+> Claude sessions in the same repo no longer share a single goal).
 
 It gives Claude Code a persistent local goal state, Codex-inspired continuation instructions, pause/resume/clear/status controls, completion-audit guardrails, and a Stop hook that keeps Claude working while a goal is active.
 
 ## Install
 
 ```bash
-git clone https://github.com/jthack/claude-goal.git
+git clone https://github.com/gyuminlee-repo/claude-goal.git
 cd claude-goal
 ./install.sh
 ```
