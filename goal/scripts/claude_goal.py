@@ -51,11 +51,14 @@ def session_id() -> str:
 
     Order of preference:
     - CLAUDE_GOAL_SESSION_ID / CLAUDE_SESSION_ID (explicit override)
+    - CLAUDE_CODE_SESSION_ID (Claude Code per-session UUID; distinct across
+      separate Claude sessions even when they share the same repo/PWD —
+      required on WSL2/Linux where TERM_SESSION_ID is absent)
     - TERM_SESSION_ID / ITERM_SESSION_ID (stable across subshells in one
       Claude Code session, distinct across separate terminal tabs)
     - PWD-derived hash (last resort; drifts in subshells)
     """
-    for key in ("CLAUDE_GOAL_SESSION_ID", "CLAUDE_SESSION_ID"):
+    for key in ("CLAUDE_GOAL_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
         value = os.environ.get(key)
         if value:
             return value
@@ -204,16 +207,24 @@ def candidate_session_ids(hook_data: dict[str, Any] | None = None) -> list[str]:
     resolve after the script is upgraded.
     """
     out: list[str] = []
+    claude_code_sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
     sources: list[str | None] = [
         os.environ.get("CLAUDE_GOAL_SESSION_ID"),
         os.environ.get("CLAUDE_SESSION_ID"),
+        claude_code_sid,
     ]
     if hook_data:
         sources.append(hook_data.get("session_id"))
-        sources.append(cwd_session_id(hook_data.get("cwd")))
-    sources.append(_term_session_id())
-    cwd = os.environ.get("PWD") or str(Path.cwd())
-    sources.append("cwd:" + hashlib.sha256(cwd.encode()).hexdigest()[:16])
+    # When CLAUDE_CODE_SESSION_ID is present, each Claude session has a
+    # unique anchor. Falling back to cwd/term hashes would re-leak a goal
+    # from one session into another that happens to share the same repo
+    # (the original /goal complaint on WSL2). Skip those fallbacks.
+    if not claude_code_sid:
+        if hook_data:
+            sources.append(cwd_session_id(hook_data.get("cwd")))
+        sources.append(_term_session_id())
+        cwd = os.environ.get("PWD") or str(Path.cwd())
+        sources.append("cwd:" + hashlib.sha256(cwd.encode()).hexdigest()[:16])
     sources.append(session_id())
     for value in sources:
         if value and value not in out:

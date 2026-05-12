@@ -144,6 +144,7 @@ def test_two_concurrent_terminals_do_not_share_goals(tmp_path):
     env_a["CLAUDE_GOAL_DB"] = db
     env_a.pop("CLAUDE_GOAL_SESSION_ID", None)
     env_a.pop("CLAUDE_SESSION_ID", None)
+    env_a.pop("CLAUDE_CODE_SESSION_ID", None)
     env_a["TERM_SESSION_ID"] = "iterm-tab-A-uuid"
     env_a["PWD"] = "/Users/alice/proj-a"
     set_a = subprocess.run(
@@ -157,6 +158,7 @@ def test_two_concurrent_terminals_do_not_share_goals(tmp_path):
     env_b["CLAUDE_GOAL_DB"] = db
     env_b.pop("CLAUDE_GOAL_SESSION_ID", None)
     env_b.pop("CLAUDE_SESSION_ID", None)
+    env_b.pop("CLAUDE_CODE_SESSION_ID", None)
     env_b["TERM_SESSION_ID"] = "iterm-tab-B-uuid"
     env_b["PWD"] = "/Users/alice/proj-b"
 
@@ -201,6 +203,7 @@ def test_term_session_anchors_goal_across_pwd_drift(tmp_path):
     # Strip any explicit overrides so we exclusively test the TERM_SESSION_ID path.
     env.pop("CLAUDE_GOAL_SESSION_ID", None)
     env.pop("CLAUDE_SESSION_ID", None)
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     env["TERM_SESSION_ID"] = "iterm-tab-abc-123"
     env["PWD"] = "/tmp/orig-cwd"
 
@@ -242,6 +245,10 @@ def test_stop_hook_finds_goal_via_hook_payload_cwd(tmp_path):
     env = os.environ.copy()
     env["CLAUDE_GOAL_DB"] = str(tmp_path / "goals.sqlite")
     env["CLAUDE_GOAL_SESSION_ID"] = "drifted-subshell"
+    # Legacy cwd-hash recovery is only honored when no Claude Code session
+    # anchor is present; otherwise the anchor would suppress cwd fallbacks
+    # to prevent cross-session goal leakage in the same repo.
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "stop-hook"],
         input=json.dumps({"session_id": "drifted-subshell", "cwd": real_cwd}),
@@ -254,3 +261,64 @@ def test_stop_hook_finds_goal_via_hook_payload_cwd(tmp_path):
     data = json.loads(result.stdout)
     assert data["decision"] == "block"
     assert "keep going" in data["reason"]
+
+
+def test_claude_code_session_id_isolates_same_repo_sessions(tmp_path):
+    """Two Claude Code sessions in the same repo (same PWD) must stay isolated.
+
+    On WSL2/Linux TERM_SESSION_ID is absent, so prior versions fell back to
+    a PWD-derived sid — meaning two `claude` invocations in the same repo
+    shared the same goal. Claude Code now exports a per-session UUID as
+    CLAUDE_CODE_SESSION_ID; that env var must be the primary anchor and
+    must suppress cwd/term fallbacks (otherwise the cwd hash would re-leak
+    session A's goal into session B's stop hook).
+    """
+    db = str(tmp_path / "goals.sqlite")
+    shared_pwd = str(tmp_path / "shared-repo")
+
+    env_a = os.environ.copy()
+    env_a["CLAUDE_GOAL_DB"] = db
+    env_a.pop("CLAUDE_GOAL_SESSION_ID", None)
+    env_a.pop("CLAUDE_SESSION_ID", None)
+    env_a.pop("TERM_SESSION_ID", None)
+    env_a.pop("ITERM_SESSION_ID", None)
+    env_a["CLAUDE_CODE_SESSION_ID"] = "423ae752-1a08-4cc4-b779-aaaaaaaaaaaa"
+    env_a["PWD"] = shared_pwd
+    set_a = subprocess.run(
+        [sys.executable, str(SCRIPT), "set", "session A goal"],
+        env=env_a, text=True, capture_output=True, check=False,
+    )
+    assert set_a.returncode == 0, set_a.stderr
+
+    env_b = dict(env_a)
+    env_b["CLAUDE_CODE_SESSION_ID"] = "9f3b6c50-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    status_b = subprocess.run(
+        [sys.executable, str(SCRIPT), "status"],
+        env=env_b, text=True, capture_output=True, check=False,
+    )
+    assert status_b.returncode == 0, status_b.stderr
+    assert "No goal is currently set" in status_b.stdout
+    assert "session A goal" not in status_b.stdout
+
+    hook_b = subprocess.run(
+        [sys.executable, str(SCRIPT), "stop-hook"],
+        input=json.dumps({"session_id": env_b["CLAUDE_CODE_SESSION_ID"], "cwd": shared_pwd}),
+        env=env_b, text=True, capture_output=True, check=False,
+    )
+    assert hook_b.returncode == 0, hook_b.stderr
+    assert hook_b.stdout == "", f"Session B hook leaked session A's goal: {hook_b.stdout!r}"
+
+    set_b = subprocess.run(
+        [sys.executable, str(SCRIPT), "set", "session B goal"],
+        env=env_b, text=True, capture_output=True, check=False,
+    )
+    assert set_b.returncode == 0, set_b.stderr
+    assert "session B goal" in set_b.stdout
+
+    status_a = subprocess.run(
+        [sys.executable, str(SCRIPT), "status"],
+        env=env_a, text=True, capture_output=True, check=False,
+    )
+    assert "session A goal" in status_a.stdout
+    assert "session B goal" not in status_a.stdout
