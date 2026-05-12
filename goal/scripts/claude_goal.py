@@ -208,18 +208,22 @@ def candidate_session_ids(hook_data: dict[str, Any] | None = None) -> list[str]:
     """
     out: list[str] = []
     claude_code_sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    hook_sid = hook_data.get("session_id") if hook_data else None
     sources: list[str | None] = [
         os.environ.get("CLAUDE_GOAL_SESSION_ID"),
         os.environ.get("CLAUDE_SESSION_ID"),
         claude_code_sid,
     ]
-    if hook_data:
-        sources.append(hook_data.get("session_id"))
-    # When CLAUDE_CODE_SESSION_ID is present, each Claude session has a
-    # unique anchor. Falling back to cwd/term hashes would re-leak a goal
-    # from one session into another that happens to share the same repo
-    # (the original /goal complaint on WSL2). Skip those fallbacks.
-    if not claude_code_sid:
+    if hook_sid:
+        sources.append(hook_sid)
+    # When any authoritative anchor is present (env-side CLAUDE_CODE_SESSION_ID
+    # or the hook payload's session_id), each Claude session has a unique id.
+    # Falling back to cwd/term hashes would re-leak a goal from one session
+    # into another that happens to share the same repo (original /goal complaint
+    # on WSL2) or re-leak a legacy cwd-scheme goal whose hash matches the
+    # current cwd. Skip those fallbacks whenever a real anchor exists.
+    has_anchor = bool(claude_code_sid or hook_sid)
+    if not has_anchor:
         if hook_data:
             sources.append(cwd_session_id(hook_data.get("cwd")))
         sources.append(_term_session_id())

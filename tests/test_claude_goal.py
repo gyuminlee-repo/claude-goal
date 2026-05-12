@@ -224,43 +224,61 @@ def test_term_session_anchors_goal_across_pwd_drift(tmp_path):
     assert "Status: active" in status_result.stdout
 
 
-def test_stop_hook_finds_goal_via_hook_payload_cwd(tmp_path):
-    """Stop hook must use hook_data.cwd to resolve the original goal session.
+def test_stop_hook_does_not_recover_legacy_cwd_goal_when_anchor_present(tmp_path):
+    """Stop hook must NOT cwd-recover legacy goals when an authoritative anchor exists.
 
-    A goal set when PWD=/Users/alice/proj-a will be keyed by
-    cwd:<sha256(/Users/alice/proj-a)>. Later the Bash subshell may have
-    drifted to /tmp, so session_id() no longer matches. But the Stop
-    hook is given the real Claude session cwd in its payload, so it
-    should still find the goal via the cwd-derived candidate.
+    Earlier behavior added cwd-hash candidates whenever the hook payload
+    carried a cwd, so a legacy cwd-keyed goal could be picked up by any new
+    Claude session that happened to live in the same repo. That was the
+    real-world leak: a fresh Claude Code session opening in the same
+    directory as a stale cwd-scheme goal kept inheriting it via stop-hook.
+
+    With strict isolation, the presence of an authoritative session anchor
+    (CLAUDE_CODE_SESSION_ID env or hook_data.session_id) suppresses cwd /
+    term fallbacks. Legacy cwd-keyed goals stay invisible to new sessions
+    and must be migrated explicitly (e.g. CLAUDE_GOAL_SESSION_ID=cwd:<hash>).
     """
-    # Set the goal using the standard session-id env so we know what to recover
     import hashlib
     real_cwd = "/Users/alice/proj-a"
     real_cwd_session_id = "cwd:" + hashlib.sha256(real_cwd.encode()).hexdigest()[:16]
 
-    assert run_goal(tmp_path, "set", "keep going", session=real_cwd_session_id).returncode == 0
+    # Seed a legacy cwd-scheme goal in the DB.
+    assert run_goal(tmp_path, "set", "legacy goal should stay isolated", session=real_cwd_session_id).returncode == 0
 
-    # Hook fires from a "subshell" where the env points elsewhere, but the
-    # hook payload still carries the real Claude session cwd.
+    # A new Claude session fires stop-hook from the same repo. The hook
+    # payload carries that session's own anchor (NOT the legacy cwd hash),
+    # plus the cwd. Strict isolation must reject the legacy match.
     env = os.environ.copy()
     env["CLAUDE_GOAL_DB"] = str(tmp_path / "goals.sqlite")
-    env["CLAUDE_GOAL_SESSION_ID"] = "drifted-subshell"
-    # Legacy cwd-hash recovery is only honored when no Claude Code session
-    # anchor is present; otherwise the anchor would suppress cwd fallbacks
-    # to prevent cross-session goal leakage in the same repo.
+    env.pop("CLAUDE_GOAL_SESSION_ID", None)
+    env.pop("CLAUDE_SESSION_ID", None)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "stop-hook"],
-        input=json.dumps({"session_id": "drifted-subshell", "cwd": real_cwd}),
+        input=json.dumps({"session_id": "fresh-session-uuid", "cwd": real_cwd}),
         env=env,
         text=True,
         capture_output=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    data = json.loads(result.stdout)
-    assert data["decision"] == "block"
-    assert "keep going" in data["reason"]
+    # Strict isolation: stop-hook must produce no block decision.
+    assert result.stdout.strip() == "", f"unexpected output: {result.stdout!r}"
+
+    # Explicit migration path: providing the legacy cwd-hash via the
+    # CLAUDE_GOAL_SESSION_ID override resolves the goal, so users can still
+    # complete or pause stale goals deliberately.
+    env_migrate = env.copy()
+    env_migrate["CLAUDE_GOAL_SESSION_ID"] = real_cwd_session_id
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "status"],
+        env=env_migrate,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "legacy goal should stay isolated" in result.stdout
 
 
 def test_claude_code_session_id_isolates_same_repo_sessions(tmp_path):
