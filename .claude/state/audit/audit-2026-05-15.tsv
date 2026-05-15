@@ -1,0 +1,10 @@
+timestamp	tool	detail
+00:54:37	Bash	cd "$HOME/_workspace/cc/claude-goal" && echo "=== test files ===" && ls tests/ 2>&1 | head -10 && echo && echo "=== pytest 회귀 테스트 ===" && python3 -m pytest tests/test_claude_goal.py::test_cl 
+00:54:46	Bash	cd "$HOME/_workspace/cc/claude-goal" && echo "=== test file imports ===" && head -30 tests/test_claude_goal.py && echo && echo "=== test framework detection ===" && grep -E "^import|^from|class.*TestC 
+00:55:11	Bash	echo "=== python3 path ===" && which python3 && python3 --version && echo && echo "=== install pytest --user ===" && python3 -m pip install --user --quiet pytest 2>&1 | tail -5 && echo && echo "=== ru 
+00:55:25	Bash	cd "$HOME/_workspace/cc/claude-goal" && echo "=== isolation test function ===" && grep -nA 80 "test_claude_code_session_id_isolates_same_repo_sessions" tests/test_claude_goal.py | head -100 
+00:55:43	Write	/Users/gml/.claude/jobs/1d3107f2/test_isolation.py 
+00:55:49	Bash	python3 /Users/gml/.claude/jobs/1d3107f2/test_isolation.py 2>&1 
+00:55:57	Bash	echo "=== existing goals.sqlite contents ===" && sqlite3 "$HOME/.claude/goal/goals.sqlite" "SELECT session_id, substr(goal,1,60) FROM goals;" 2>&1 | head -20 && echo && echo "=== count ===" && sqlite3 
+00:56:04	Bash	echo "=== goals table schema ===" && sqlite3 "$HOME/.claude/goal/goals.sqlite" ".schema goals" 2>&1 && echo && echo "=== all rows (limited) ===" && sqlite3 -header -column "$HOME/.claude/goal/goals.sq 
+22:07:00	Bash	cd "$WORKSPACE_ROOT/cc/claude-goal" echo "=== .claude/state tree ===" find .claude -type f | head -20 echo "" echo "=== sample contents (first file) ===" FIRST=$(find .claude -type f | head -1) [ -n " 
