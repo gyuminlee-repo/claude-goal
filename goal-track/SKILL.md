@@ -1,5 +1,5 @@
 ---
-name: goal
+name: goal-track
 description: Codex-style /goal for Claude Code. Use when the user runs /goal, wants a persistent long-running objective, or wants to pause, resume, clear, or complete a goal.
 argument-hint: "[status|pause|resume|clear|complete] [--tokens N] <objective>"
 ---
@@ -9,7 +9,7 @@ argument-hint: "[status|pause|resume|clear|complete] [--tokens N] <objective>"
 Run the helper first, then obey the returned "Claude instructions":
 
 ```bash
-python3 ~/.claude/skills/goal/scripts/claude_goal.py invoke "$ARGUMENTS"
+python3 ~/.claude/skills/goal-track/scripts/claude_goal.py invoke "$ARGUMENTS"
 ```
 
 The helper persists goal state in `~/.claude/goal/goals.sqlite` and implements the Codex-inspired command surface:
@@ -37,7 +37,7 @@ Before marking a goal complete, run a real completion audit:
 6. Only after the audit passes, run:
 
 ```bash
-python3 ~/.claude/skills/goal/scripts/claude_goal.py complete
+python3 ~/.claude/skills/goal-track/scripts/claude_goal.py complete
 ```
 
 Then report final elapsed time and any soft budget state.
