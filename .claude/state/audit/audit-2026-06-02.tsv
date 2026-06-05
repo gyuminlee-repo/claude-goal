@@ -1,0 +1,2 @@
+timestamp	tool	detail
+01:04:05	Bash	echo "=== allpush SKILL.md 제외 목록 위치 ===" cd /Users/gml/_workspace/cc/claude-dotfiles git fetch origin -q grep -n 'cc/evolvepro\|cc/lit-c1\|영구 제외\|신규 제외 추가' skills/allpu 
