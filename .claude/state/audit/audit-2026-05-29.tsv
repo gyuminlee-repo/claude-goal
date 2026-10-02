@@ -1,6 +1,0 @@
-timestamp	tool	detail
-22:03:16	Bash	cd /Users/gml/_workspace/cc/claude-dotfiles echo "=== install.sh 에서 goal 관련 symlink 생성 로직 ===" rg -n -- 'goal' install.sh 2>&1 echo "" echo "=== install.sh 전체 (97줄, symlink 생
-22:12:11	Bash	echo "=== dotfiles: fetch + origin 상태 + 라벨 ===" cd /Users/gml/_workspace/cc/claude-dotfiles git fetch --all -q 2>&1 | tail -2 echo "branch: $(git branch --show-current)" git --no-pager log --o 
-22:14:14	Bash	cd /Users/gml/_workspace/cc/claude-dotfiles git commit -q -m "v0.03.13.00: rename code-review skill to cr-multi, expose native /code-review and /goal" 2>&1 echo "dotfiles 커밋: $(git --no-pager log  
-22:15:48	Bash	cd /Users/gml/_workspace/cc/claude-dotfiles echo "=== dotfiles push ===" git push origin main 2>&1 | tail -3 echo "dotfiles 잔여 ahead (0이어야): $(git --no-pager log --oneline origin/main..HEAD  
-22:18:27	Bash	cd /Users/gml/_workspace/cc/claude-dotfiles git push origin main 2>&1 | tail -4 echo "" echo "=== silent push fail 검증: ahead (0이어야) ===" git --no-pager log --oneline origin/main..HEAD | wc - 
