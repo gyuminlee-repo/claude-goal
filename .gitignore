@@ -4,3 +4,7 @@ __pycache__/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Claude Code / loophaus session logs (local only)
+.claude/state/
+.loophaus/
